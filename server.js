@@ -122,8 +122,10 @@ app.get('/send-namaz', async (req, res) => {
  * ✅ Ping Route for Render Keep-Alive
  */
 app.get('/ping', (req, res) => {
-  res.send('👋 Server is awake!');
+  console.log(`🔁 Ping route hit at ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`);
+  res.send('✅ Ping success');
 });
+
 
 /**
  * ✅ Start Server
