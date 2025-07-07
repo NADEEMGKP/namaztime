@@ -119,6 +119,13 @@ app.get('/send-namaz', async (req, res) => {
 });
 
 /**
+ * ✅ Ping Route for Render Keep-Alive
+ */
+app.get('/ping', (req, res) => {
+  res.send('👋 Server is awake!');
+});
+
+/**
  * ✅ Start Server
  */
 app.listen(PORT, () => {
