@@ -46,9 +46,10 @@ app.post('/save-token', (req, res) => {
   if (!exists) {
     tokens.push({ token, enabled: true });
     fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens, null, 2));
-    console.log(`✅ Token saved: ${token}`);
+    // console.log(`✅ Token saved: ${token}`);
   } else {
-    console.log(`⚠️ Token already exists`);
+    // 🔇 Commented out to avoid spammy logs
+    // console.log(`⚠️ Token already exists`);
   }
 
   res.send('Token saved');
@@ -69,7 +70,7 @@ app.post('/toggle-notification', (req, res) => {
 
   tokens[index].enabled = enabled;
   fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens, null, 2));
-  console.log(`🔄 Token ${token} set to: ${enabled}`);
+  // console.log(`🔄 Token updated to: ${enabled}`);
   res.send('Updated');
 });
 
@@ -90,7 +91,7 @@ async function sendNotification(token, namazName) {
         },
       },
     });
-    console.log(`✅ Notification sent to ${token}`);
+    // console.log(`✅ Notification sent to ${token}`);
   } catch (err) {
     console.error('❌ FCM error:', err.message);
   }
@@ -122,10 +123,9 @@ app.get('/send-namaz', async (req, res) => {
  * ✅ Ping Route for Render Keep-Alive
  */
 app.get('/ping', (req, res) => {
-  console.log(`🔁 Ping route hit at ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`);
+  // 🔇 Removed console.log to avoid "output too large" warning
   res.send('✅ Ping success');
 });
-
 
 /**
  * ✅ Start Server
