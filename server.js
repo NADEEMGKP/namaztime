@@ -5,73 +5,84 @@ require('dotenv').config(); // Load .env
 const express = require('express');
 const bodyParser = require('body-parser');
 const admin = require('firebase-admin');
-const fs = require('fs');
-
-// 🔐 Firebase service account from ENV
-admin.initializeApp({
-  credential: admin.credential.cert({
-    type: process.env.FIREBASE_TYPE,
-    project_id: process.env.FIREBASE_PROJECT_ID,
-    private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
-    private_key: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-    client_email: process.env.FIREBASE_CLIENT_EMAIL,
-    client_id: process.env.FIREBASE_CLIENT_ID,
-    auth_uri: process.env.FIREBASE_AUTH_URI,
-    token_uri: process.env.FIREBASE_TOKEN_URI,
-    auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_CERT_URL,
-    client_x509_cert_url: process.env.FIREBASE_CLIENT_CERT_URL,
-    universe_domain: process.env.FIREBASE_UNIVERSE_DOMAIN,
-  }),
-});
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-const TOKEN_PATH = 'tokens.json';
+const PORT = process.env.PORT; // ✅ Always use Render provided PORT
 
 app.use(bodyParser.json());
+
+// ✅ Initialize Firebase only if not already initialized
+if (!admin.apps.length) {
+  try {
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        type: process.env.FIREBASE_TYPE,
+        project_id: process.env.FIREBASE_PROJECT_ID,
+        private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+        private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+        client_email: process.env.FIREBASE_CLIENT_EMAIL,
+        client_id: process.env.FIREBASE_CLIENT_ID,
+        auth_uri: process.env.FIREBASE_AUTH_URI,
+        token_uri: process.env.FIREBASE_TOKEN_URI,
+        auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_CERT_URL,
+        client_x509_cert_url: process.env.FIREBASE_CLIENT_CERT_URL,
+        universe_domain: process.env.FIREBASE_UNIVERSE_DOMAIN,
+      }),
+    });
+    console.log('✅ Firebase initialized');
+  } catch (err) {
+    console.error('❌ Firebase initialization failed:', err.message);
+  }
+}
+
+const db = admin.firestore();
+const tokensCollection = db.collection('tokens'); // 🔥 Firestore collection
 
 /**
  * ✅ Save FCM Token
  */
-app.post('/save-token', (req, res) => {
+app.post('/save-token', async (req, res) => {
   const { token } = req.body;
   if (!token) return res.status(400).send('Token missing');
 
-  let tokens = fs.existsSync(TOKEN_PATH)
-    ? JSON.parse(fs.readFileSync(TOKEN_PATH, 'utf-8'))
-    : [];
+  try {
+    const docRef = tokensCollection.doc(token);
+    const doc = await docRef.get();
 
-  const exists = tokens.find(t => t.token === token);
+    if (!doc.exists) {
+      await docRef.set({ enabled: true });
+      console.log(`✅ Token saved: ${token}`);
+    } else {
+      console.log(`⚠️ Token already exists`);
+    }
 
-  if (!exists) {
-    tokens.push({ token, enabled: true });
-    fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens, null, 2));
-    // console.log(`✅ Token saved: ${token}`);
-  } else {
-    // 🔇 Commented out to avoid spammy logs
-    // console.log(`⚠️ Token already exists`);
+    res.send('Token saved');
+  } catch (err) {
+    console.error('❌ Firestore save error:', err.message);
+    res.status(500).send('Error saving token');
   }
-
-  res.send('Token saved');
 });
 
 /**
  * ✅ Toggle Notification
  */
-app.post('/toggle-notification', (req, res) => {
+app.post('/toggle-notification', async (req, res) => {
   const { token, enabled } = req.body;
   if (typeof enabled !== 'boolean' || !token) return res.status(400).send('Invalid data');
 
-  if (!fs.existsSync(TOKEN_PATH)) return res.status(404).send('Token file missing');
+  try {
+    const docRef = tokensCollection.doc(token);
+    const doc = await docRef.get();
 
-  let tokens = JSON.parse(fs.readFileSync(TOKEN_PATH, 'utf-8'));
-  const index = tokens.findIndex(t => t.token === token);
-  if (index === -1) return res.status(404).send('Token not found');
+    if (!doc.exists) return res.status(404).send('Token not found');
 
-  tokens[index].enabled = enabled;
-  fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens, null, 2));
-  // console.log(`🔄 Token updated to: ${enabled}`);
-  res.send('Updated');
+    await docRef.update({ enabled });
+    console.log(`🔄 Token updated: ${token} → ${enabled}`);
+    res.send('Updated');
+  } catch (err) {
+    console.error('❌ Firestore update error:', err.message);
+    res.status(500).send('Error updating token');
+  }
 });
 
 /**
@@ -91,7 +102,7 @@ async function sendNotification(token, namazName) {
         },
       },
     });
-    // console.log(`✅ Notification sent to ${token}`);
+    console.log(`✅ Notification sent to ${token}`);
   } catch (err) {
     console.error('❌ FCM error:', err.message);
   }
@@ -108,28 +119,38 @@ app.get('/send-namaz', async (req, res) => {
     return res.status(400).send('Invalid namaz type');
   }
 
-  if (!fs.existsSync(TOKEN_PATH)) return res.status(404).send('Token file not found');
+  try {
+    const snapshot = await tokensCollection.where('enabled', '==', true).get();
 
-  const tokens = JSON.parse(fs.readFileSync(TOKEN_PATH, 'utf-8'));
-  const enabledTokens = tokens.filter(t => t.enabled).map(t => t.token);
+    if (snapshot.empty) {
+      console.log('⚠️ No enabled users');
+      return res.send('No enabled users');
+    }
 
-  if (enabledTokens.length === 0) return res.send('No enabled users');
+    snapshot.forEach(doc => {
+      const token = doc.id;
+      sendNotification(token, namazName);
+    });
 
-  enabledTokens.forEach(token => sendNotification(token, namazName));
-  res.send(`✅ Notification sent for ${namazName}`);
+    res.send(`✅ Notification sent for ${namazName}`);
+  } catch (err) {
+    console.error('❌ Firestore fetch error:', err.message);
+    res.status(500).send('Error sending notifications');
+  }
 });
 
 /**
  * ✅ Ping Route for Render Keep-Alive
  */
 app.get('/ping', (req, res) => {
-  // 🔇 Removed console.log to avoid "output too large" warning
+  const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+  console.log(`🔁 Ping route hit at ${now}`);
   res.send('✅ Ping success');
 });
 
 /**
  * ✅ Start Server
  */
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
