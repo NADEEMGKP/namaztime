@@ -5,9 +5,10 @@ require('dotenv').config(); // Load .env
 const express = require('express');
 const bodyParser = require('body-parser');
 const admin = require('firebase-admin');
+const cron = require('node-cron');
 
 const app = express();
-const PORT = process.env.PORT; // ✅ Always use Render provided PORT
+const PORT = process.env.PORT || 3000; // ✅ Always use Render provided PORT
 
 app.use(bodyParser.json());
 
@@ -109,6 +110,27 @@ async function sendNotification(token, namazName) {
 }
 
 /**
+ * ✅ Send Notification to All Enabled Users
+ */
+async function sendNamazNotifications(namazName) {
+  try {
+    const snapshot = await tokensCollection.where('enabled', '==', true).get();
+
+    if (snapshot.empty) {
+      console.log('⚠️ No enabled users');
+      return;
+    }
+
+    snapshot.forEach(doc => {
+      const token = doc.id;
+      sendNotification(token, namazName);
+    });
+  } catch (err) {
+    console.error('❌ Firestore fetch error:', err.message);
+  }
+}
+
+/**
  * ✅ API: /send-namaz?type=fajr
  */
 app.get('/send-namaz', async (req, res) => {
@@ -119,24 +141,8 @@ app.get('/send-namaz', async (req, res) => {
     return res.status(400).send('Invalid namaz type');
   }
 
-  try {
-    const snapshot = await tokensCollection.where('enabled', '==', true).get();
-
-    if (snapshot.empty) {
-      console.log('⚠️ No enabled users');
-      return res.send('No enabled users');
-    }
-
-    snapshot.forEach(doc => {
-      const token = doc.id;
-      sendNotification(token, namazName);
-    });
-
-    res.send(`✅ Notification sent for ${namazName}`);
-  } catch (err) {
-    console.error('❌ Firestore fetch error:', err.message);
-    res.status(500).send('Error sending notifications');
-  }
+  await sendNamazNotifications(namazName);
+  res.send(`✅ Notification sent for ${namazName}`);
 });
 
 /**
@@ -149,8 +155,33 @@ app.get('/ping', (req, res) => {
 });
 
 /**
+ * ✅ Wake-Up Route for External Cron Job
+ */
+app.get('/wake-up', (req, res) => {
+  const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+  console.log(`🔔 Server woke up via external cron job at ${now}`);
+  res.send('✅ Server is awake');
+});
+
+/**
  * ✅ Start Server
  */
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
+
+  // ✅ Delay starting cron jobs by 60 seconds (cold start safe)
+  setTimeout(() => {
+    console.log('⏳ Initializing cron jobs after delay...');
+
+    /**
+     * 🔥 Schedule Namaz Times (Matches your external cron)
+     */
+    cron.schedule('0 4 * * *', () => sendNamazNotifications('Fajr'));     // 4:00 AM
+    cron.schedule('25 12 * * *', () => sendNamazNotifications('Dhuhr'));  // 12:25 PM
+    cron.schedule('50 15 * * *', () => sendNamazNotifications('Asr'));    // 3:50 PM
+    cron.schedule('0 17 * * *', () => sendNamazNotifications('Maghrib')); // 5:00 PM
+    cron.schedule('35 20 * * *', () => sendNamazNotifications('Isha'));   // 8:35 PM
+
+    console.log('✅ Cron jobs scheduled');
+  }, 60000); // 60 sec delay
 });
