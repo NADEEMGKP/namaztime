@@ -39,6 +39,158 @@ if (!admin.apps.length) {
 const db = admin.firestore();
 const tokensCollection = db.collection('tokens'); // 🔥 Firestore collection
 
+/* -------------------- Common Notification Functions -------------------- */
+
+/**
+ * ✅ Remove invalid FCM token
+ */
+async function removeInvalidToken(token) {
+  try {
+    await tokensCollection.doc(token).delete();
+    console.log(`🗑️ Removed invalid token: ${token}`);
+  } catch (err) {
+    console.error('❌ Error removing invalid token:', err.message);
+  }
+}
+
+/* -------------------- Namaz Notification Functions -------------------- */
+
+/**
+ * ✅ Send Namaz Notification
+ */
+async function sendNamazNotification(token, namazName) {
+  try {
+    await admin.messaging().send({
+      token,
+      android: {
+        priority: 'high',
+        notification: {
+          title: 'Namaz Reminder',
+          body: `${namazName} का समय हो गया है`,
+          sound: 'azan',
+          channelId: 'namaz_channel',
+        },
+      },
+    });
+    console.log(`✅ Namaz notification sent to ${token}`);
+  } catch (err) {
+    console.error('❌ FCM error:', err.message);
+    if (err.code === 'messaging/invalid-registration-token' || 
+        err.code === 'messaging/registration-token-not-registered') {
+      await removeInvalidToken(token);
+    }
+  }
+}
+
+/**
+ * ✅ Send Namaz Notifications to All Enabled Users
+ */
+async function sendNamazNotifications(namazName) {
+  try {
+    const snapshot = await tokensCollection.where('enabled', '==', true).get();
+
+    if (snapshot.empty) {
+      console.log('⚠️ No enabled users for namaz notifications');
+      return;
+    }
+
+    const promises = snapshot.docs.map(doc => 
+      sendNamazNotification(doc.id, namazName)
+    );
+
+    await Promise.all(promises);
+    console.log(`✅ All namaz notifications sent for ${namazName}`);
+  } catch (err) {
+    console.error('❌ Firestore fetch error:', err.message);
+  }
+}
+
+/* -------------------- Hadith Notification Functions -------------------- */
+
+/**
+ * ✅ Send Hadith Notification
+ */
+async function sendHadithNotification(token, hadithData) {
+  try {
+    const notification = {
+      token,
+      notification: {
+        title: `नया हदीस: ${hadithData.category || 'Islamic Hadith'}`,
+        body: hadithData.text.length > 50 
+          ? `${hadithData.text.substring(0, 50)}...` 
+          : hadithData.text,
+      },
+      android: {
+        priority: 'high',
+        notification: {
+          sound: 'default',
+          channelId: 'hadith_channel',
+        },
+      },
+      data: {
+        type: 'hadith',
+        hadithId: hadithData.id,
+        click_action: 'FLUTTER_NOTIFICATION_CLICK'
+      }
+    };
+
+    await admin.messaging().send(notification);
+    console.log(`✅ Hadith notification sent to ${token}`);
+  } catch (err) {
+    console.error('❌ FCM error for hadith notification:', err.message);
+    if (err.code === 'messaging/invalid-registration-token' || 
+        err.code === 'messaging/registration-token-not-registered') {
+      await removeInvalidToken(token);
+    }
+  }
+}
+
+/**
+ * ✅ Send Hadith Notifications to All Enabled Users
+ */
+async function sendHadithNotifications(hadithId, hadithData) {
+  try {
+    const snapshot = await tokensCollection.where('enabled', '==', true).get();
+
+    if (snapshot.empty) {
+      console.log('⚠️ No enabled users for hadith notifications');
+      return;
+    }
+
+    const fullHadithData = { ...hadithData, id: hadithId };
+    const promises = snapshot.docs.map(doc => 
+      sendHadithNotification(doc.id, fullHadithData)
+    );
+
+    await Promise.all(promises);
+    console.log(`✅ All hadith notifications sent for ${hadithId}`);
+  } catch (err) {
+    console.error('❌ Error sending hadith notifications:', err.message);
+  }
+}
+
+/**
+ * ✅ Setup Firestore Trigger for New Hadiths
+ */
+function setupHadithNotifications() {
+  const hadithsRef = db.collection('hadiths');
+  
+  hadithsRef.orderBy('createdAt', 'desc').limit(1)
+    .onSnapshot((snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === 'added') {
+          const newHadith = change.doc.data();
+          console.log('🆕 New hadith added:', change.doc.id);
+          sendHadithNotifications(change.doc.id, newHadith);
+        }
+      });
+    });
+  
+  console.log('✅ Hadith notification listener active');
+}
+
+/* -------------------- API Endpoints -------------------- */
+
 /**
  * ✅ Save FCM Token
  */
@@ -87,50 +239,6 @@ app.post('/toggle-notification', async (req, res) => {
 });
 
 /**
- * ✅ Send Notification
- */
-async function sendNotification(token, namazName) {
-  try {
-    await admin.messaging().send({
-      token,
-      android: {
-        priority: 'high',
-        notification: {
-          title: 'Namaz Reminder',
-          body: `${namazName} का समय हो गया है`,
-          sound: 'azan',
-          channelId: 'namaz_channel',
-        },
-      },
-    });
-    console.log(`✅ Notification sent to ${token}`);
-  } catch (err) {
-    console.error('❌ FCM error:', err.message);
-  }
-}
-
-/**
- * ✅ Send Notification to All Enabled Users
- */
-async function sendNamazNotifications(namazName) {
-  try {
-    const snapshot = await tokensCollection.where('enabled', '==', true).get();
-
-    if (snapshot.empty) {
-      console.log('⚠️ No enabled users');
-      return;
-    }
-
-    snapshot.forEach(doc => {
-      const token = doc.id;
-      sendNotification(token, namazName);
-    });
-  } catch (err) {
-    console.error('❌ Firestore fetch error:', err.message);
-  }
-}
-
-/**
  * ✅ API: /send-namaz?type=fajr
  */
 app.get('/send-namaz', async (req, res) => {
@@ -143,6 +251,31 @@ app.get('/send-namaz', async (req, res) => {
 
   await sendNamazNotifications(namazName);
   res.send(`✅ Notification sent for ${namazName}`);
+});
+
+/**
+ * ✅ API: Manually Trigger Hadith Notification
+ */
+app.post('/send-hadith-notification', async (req, res) => {
+  const { hadithId } = req.body;
+  
+  if (!hadithId) {
+    return res.status(400).send('Hadith ID missing');
+  }
+
+  try {
+    const hadithDoc = await db.collection('hadiths').doc(hadithId).get();
+    
+    if (!hadithDoc.exists) {
+      return res.status(404).send('Hadith not found');
+    }
+
+    await sendHadithNotifications(hadithId, hadithDoc.data());
+    res.send(`✅ Hadith notification sent for ${hadithId}`);
+  } catch (err) {
+    console.error('❌ Error sending hadith notification:', err.message);
+    res.status(500).send('Error sending hadith notification');
+  }
 });
 
 /**
@@ -169,19 +302,20 @@ app.get('/wake-up', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
 
-  // ✅ Delay starting cron jobs by 60 seconds (cold start safe)
+  // ✅ Delay starting services by 60 seconds (cold start safe)
   setTimeout(() => {
-    console.log('⏳ Initializing cron jobs after delay...');
+    console.log('⏳ Initializing services after delay...');
 
-    /**
-     * 🔥 Schedule Namaz Times (Matches your external cron)
-     */
+    // Schedule Namaz Times
     cron.schedule('0 4 * * *', () => sendNamazNotifications('Fajr'));     // 4:00 AM
     cron.schedule('25 12 * * *', () => sendNamazNotifications('Dhuhr'));  // 12:25 PM
     cron.schedule('50 15 * * *', () => sendNamazNotifications('Asr'));    // 3:50 PM
     cron.schedule('0 17 * * *', () => sendNamazNotifications('Maghrib')); // 5:00 PM
     cron.schedule('35 20 * * *', () => sendNamazNotifications('Isha'));   // 8:35 PM
 
-    console.log('✅ Cron jobs scheduled');
+    // Setup hadith notifications listener
+    setupHadithNotifications();
+
+    console.log('✅ All services initialized');
   }, 60000); // 60 sec delay
 });
